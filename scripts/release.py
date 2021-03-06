@@ -13,7 +13,6 @@ Baked assumptions:
   - lines "TOML" and "====" are the main heading.
 - ABNF file:
   - is `toml.abnf`
-  - TODO: figure out where ABNF file goes on the website
 
 Checked assumptions:
 
@@ -36,7 +35,7 @@ import textwrap
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 # Copied from semver.org and broken up for readability + line length.
 SEMVER_REGEX = re.compile(
@@ -70,19 +69,21 @@ SEMVER_REGEX = re.compile(
 @contextmanager
 def task(message: str):
     """A little thing to allow for nicer code organization."""
+    global _INDENT
+
     log(f"{message}...")
-    log.indent += 1
+    _INDENT += 1
     try:
         yield
     except AssertionError as e:
         log(f"ERROR: {e}", error=True)
         sys.exit(1)
     finally:
-        log.indent -= 1
+        _INDENT -= 1
 
 
 def log(message: str, *, error=False) -> None:
-    output = textwrap.indent(message, "  " * log.indent)
+    output = textwrap.indent(message, "  " * _INDENT)
 
     if error:
         file = sys.stderr
@@ -95,7 +96,7 @@ def log(message: str, *, error=False) -> None:
     print(output, file=file)
 
 
-log.indent = 0
+_INDENT = 0
 
 
 def run(*args, cwd: Path):
@@ -114,23 +115,40 @@ def run(*args, cwd: Path):
     assert False, f"Exited with non-zero exit code: {result.returncode}"
 
 
-def change_line(path: Path, *, line: str, to: List[str]) -> None:
-    # Create temp file
+@contextmanager
+def replacement_file(path: Path):
     fh, tmp_path = tempfile.mkstemp()
-    with os.fdopen(fh, "w") as tmp_file, path.open() as given_file:
-        for got_line in given_file:
-            # not-to-be-replaced lines
-            if got_line != line + "\n":
-                tmp_file.write(got_line)
-                continue
-            # replacement lines
-            for replacement in to:
-                tmp_file.write(replacement + "\n")
+    with os.fdopen(fh, "w") as dest:
+        with path.open() as source:
+            yield source, dest
 
     # Replace current file with rewritten file
     shutil.copymode(path, tmp_path)
     path.unlink()
     shutil.move(tmp_path, path)
+
+
+def matches(line):
+    return (line + "\n").__eq__
+
+
+def contains(fragment):
+    def marker(line):
+        return fragment in line
+
+    return marker
+
+
+def change_line(path: Path, *, marker: Callable[[str], bool], to: List[str]) -> None:
+    with replacement_file(path) as (source, dest):
+        for line in source:
+            # not-to-be-replaced lines
+            if not marker(line):
+                dest.write(line)
+                continue
+            # replacement lines
+            for replacement in to:
+                dest.write(replacement + "\n")
 
 
 def git_commit(message: str, *, files: List[str], repo: Path):
@@ -211,7 +229,7 @@ def prepare_release(version: str, spec_repo: Path, website_repo: Path) -> None:
         unreleased_heading = "## unreleased"
         changelog = spec_repo / "CHANGELOG.md"
 
-        change_line(changelog, line=unreleased_heading, to=[release_heading])
+        change_line(changelog, marker=matches(unreleased_heading), to=[release_heading])
         git_commit(release_message, files=[str(changelog)], repo=spec_repo)
 
     with task("Creating release tag"):
@@ -220,25 +238,43 @@ def prepare_release(version: str, spec_repo: Path, website_repo: Path) -> None:
     with task("Updating changelog for development"):
         change_line(
             changelog,
-            line=release_heading,
+            marker=matches(release_heading),
             to=[unreleased_heading, "", "Nothing.", "", release_heading],
         )
         git_commit("Bump for development", files=[str(changelog)], repo=spec_repo)
 
     with task("Copy to website"):
-        # TODO: ABNF file, https://github.com/toml-lang/toml.io/issues/19
         source_md = spec_repo / "toml.md"
         destination_md = website_repo / "specs" / "en" / f"v{version}.md"
 
         shutil.copyfile(source_md, destination_md)
 
-    with task("Update title"):
-        new_heading = f"TOML v{version}"
-        change_line(destination_md, line="TOML", to=[new_heading])
-        change_line(destination_md, line="====", to=["=" * len(new_heading)])
+    new_heading = f"TOML v{version}"
+    new_abnf_link = f"https://github.com/toml-lang/toml/blob/{version}/toml.abnf"
+
+    with task("Updating spec for release"):
+        change_line(destination_md, marker=matches("TOML"), to=[new_heading])
+        change_line(destination_md, marker=matches("===="), to=["=" * len(new_heading)])
+        change_line(
+            destination_md,
+            marker=matches("[abnf]: ./toml.abnf"),
+            to=[f"[abnf]: {new_abnf_link}"],
+        )
+
+    netlify_toml = website_repo / "netlify.toml"
+
+    with task("Update latest redirect"):
+        marker = "RELEASE AUTOMATION MARKER: version"
+        new_line = f'  to = "/en/v{version}"  # {marker}'
+
+        change_line(netlify_toml, marker=contains(marker), to=[new_line])
 
     with task("Commit new version"):
-        git_commit(release_message, files=[str(destination_md)], repo=website_repo)
+        git_commit(
+            release_message,
+            files=[str(destination_md), str(netlify_toml)],
+            repo=website_repo,
+        )
 
 
 def push_release(version: str, spec_repo: Path, website_repo: Path) -> None:

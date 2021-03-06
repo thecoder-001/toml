@@ -2,7 +2,20 @@
 
 ## unreleased
 
-*  Clarify that comments and newlines are allowed before commas in arrays.
+Nothing.
+
+## 1.0.0 / 2021-01-11
+
+* Clarify how tables are created and defined.
+* Clarify and describe the top-level table.
+* Clarify that indentation before keys is ignored.
+* Clarify that indentation before table headers is ignored.
+* Clarify that indentation between array values is ignored.
+
+## 1.0.0-rc.3 / 2020-10-07
+
+* Clarify that comments and newlines are allowed before commas in arrays.
+* Mark the ABNF as canonical, and reference it from the text specification.
 
 ## 1.0.0-rc.2 / 2020-08-09
 
